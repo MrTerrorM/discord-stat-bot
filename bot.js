@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, EmbedBuilder, SlashCommandBuilder, REST, Routes } = require('discord.js');
+const { Client, GatewayIntentBits, EmbedBuilder, SlashCommandBuilder, REST, Routes, AttachmentBuilder, PermissionFlagsBits } = require('discord.js');
 const fs = require('fs');
 require('dotenv').config();
 
@@ -8,7 +8,7 @@ const DB_PATH = './database.json';
 // Initialize database
 let db = { 
   users: {},
-  voiceSessions: {} // Stores active VC sessions (when someone joined)
+  voiceSessions: {}
 };
 
 // Load database from file (if exists)
@@ -117,6 +117,11 @@ client.once('ready', async () => {
             { name: 'Messages', value: 'messages' },
             { name: 'VC', value: 'voice' }
           )),
+    
+    new SlashCommandBuilder()
+      .setName('export')
+      .setDescription('Export database file (Admin only)')
+      .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
   ].map(command => command.toJSON());
 
   const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
@@ -135,10 +140,8 @@ client.once('ready', async () => {
 
 // Event: new message
 client.on('messageCreate', (message) => {
-  // Ignore bot messages
   if (message.author.bot) return;
 
-  // Count message
   try {
     updateMessageCount(message.author.id, message.author.tag);
   } catch (error) {
@@ -146,12 +149,11 @@ client.on('messageCreate', (message) => {
   }
 });
 
-// Event: voice state change (join/leave VC)
+// Event: voice state change
 client.on('voiceStateUpdate', (oldState, newState) => {
   const userId = newState.id;
   const username = newState.member.user.tag;
 
-  // User joined voice channel
   if (!oldState.channelId && newState.channelId) {
     db.voiceSessions[userId] = {
       joinTime: Date.now(),
@@ -160,13 +162,11 @@ client.on('voiceStateUpdate', (oldState, newState) => {
     console.log(`🎤 ${username} joined VC`);
   }
   
-  // User left voice channel
   if (oldState.channelId && !newState.channelId) {
     if (db.voiceSessions[userId]) {
       const session = db.voiceSessions[userId];
-      const duration = Math.floor((Date.now() - session.joinTime) / 1000); // in seconds
+      const duration = Math.floor((Date.now() - session.joinTime) / 1000);
       
-      // Initialize user if doesn't exist
       if (!db.users[userId]) {
         db.users[userId] = {
           username: username,
@@ -176,7 +176,6 @@ client.on('voiceStateUpdate', (oldState, newState) => {
         };
       }
       
-      // Add time to stats
       db.users[userId].voice_time = (db.users[userId].voice_time || 0) + duration;
       db.users[userId].username = username;
       
@@ -187,23 +186,20 @@ client.on('voiceStateUpdate', (oldState, newState) => {
     }
   }
   
-  // User switched between channels (don't count as leaving)
   if (oldState.channelId && newState.channelId && oldState.channelId !== newState.channelId) {
     console.log(`🔄 ${username} switched VC channel`);
   }
 });
 
-// Slash command: /stats
+// Slash commands
 client.on('interactionCreate', async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
 
   if (interaction.commandName === 'stats') {
-    // Check if user option was provided
     const targetUser = interaction.options.getUser('user') || interaction.user;
     const userId = targetUser.id;
     const stats = getUserStats(userId);
     
-    // Convert seconds to hours (with 1 decimal place)
     const hours = (stats.voice_time / 3600).toFixed(1);
 
     const embed = new EmbedBuilder()
@@ -246,6 +242,40 @@ client.on('interactionCreate', async (interaction) => {
     });
 
     await interaction.reply({ embeds: [embed] });
+  }
+
+  if (interaction.commandName === 'export') {
+    // Check if user has admin permissions
+    if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+      await interaction.reply({ content: '❌ You need Administrator permissions to use this command!', ephemeral: true });
+      return;
+    }
+
+    try {
+      // Create attachment from database file
+      const attachment = new AttachmentBuilder(DB_PATH, { name: 'database.json' });
+      
+      const totalUsers = Object.keys(db.users).length;
+      const totalMessages = Object.values(db.users).reduce((sum, user) => sum + user.message_count, 0);
+      const totalVCTime = Object.values(db.users).reduce((sum, user) => sum + user.voice_time, 0);
+      
+      const embed = new EmbedBuilder()
+        .setTitle('📦 Database Export')
+        .setDescription('Database file attached below')
+        .addFields(
+          { name: 'Total Users', value: `${totalUsers}`, inline: true },
+          { name: 'Total Messages', value: `${totalMessages}`, inline: true },
+          { name: 'Total VC Time', value: `${formatVoiceTime(totalVCTime)}`, inline: true }
+        )
+        .setColor(0x00FF00)
+        .setTimestamp();
+
+      await interaction.reply({ embeds: [embed], files: [attachment], ephemeral: true });
+      console.log(`📤 Database exported by ${interaction.user.tag}`);
+    } catch (error) {
+      console.error('Error exporting database:', error);
+      await interaction.reply({ content: '❌ Error exporting database!', ephemeral: true });
+    }
   }
 });
 
