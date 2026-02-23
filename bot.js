@@ -122,6 +122,37 @@ client.once('ready', async () => {
       .setName('export')
       .setDescription('Export database file (Admin only)')
       .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    
+    new SlashCommandBuilder()
+      .setName('add')
+      .setDescription('Add stats to a user (Admin only)')
+      .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+      .addSubcommand(subcommand =>
+        subcommand
+          .setName('message')
+          .setDescription('Add messages to a user')
+          .addUserOption(option =>
+            option.setName('user')
+              .setDescription('User to add messages to')
+              .setRequired(true))
+          .addIntegerOption(option =>
+            option.setName('amount')
+              .setDescription('Number of messages to add')
+              .setRequired(true)
+              .setMinValue(1)))
+      .addSubcommand(subcommand =>
+        subcommand
+          .setName('vc')
+          .setDescription('Add VC time to a user')
+          .addUserOption(option =>
+            option.setName('user')
+              .setDescription('User to add VC time to')
+              .setRequired(true))
+          .addIntegerOption(option =>
+            option.setName('seconds')
+              .setDescription('Number of seconds to add')
+              .setRequired(true)
+              .setMinValue(1))),
   ].map(command => command.toJSON());
 
   const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
@@ -247,13 +278,18 @@ client.on('interactionCreate', async (interaction) => {
   if (interaction.commandName === 'export') {
     // Check if user has admin permissions
     if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
-      await interaction.reply({ content: '❌ You need Administrator permissions to use this command!', ephemeral: true });
+      await interaction.reply({ 
+        content: '❌ You need Administrator permissions to use this command!', 
+        flags: 64 
+      });
       return;
     }
 
     try {
-      // Create attachment from database file
-      const attachment = new AttachmentBuilder(DB_PATH, { name: 'database.json' });
+      // Export from memory
+      const dbJson = JSON.stringify(db, null, 2);
+      const buffer = Buffer.from(dbJson, 'utf-8');
+      const attachment = new AttachmentBuilder(buffer, { name: 'database.json' });
       
       const totalUsers = Object.keys(db.users).length;
       const totalMessages = Object.values(db.users).reduce((sum, user) => sum + user.message_count, 0);
@@ -270,11 +306,87 @@ client.on('interactionCreate', async (interaction) => {
         .setColor(0x00FF00)
         .setTimestamp();
 
-      await interaction.reply({ embeds: [embed], files: [attachment], ephemeral: true });
+      await interaction.reply({ 
+        embeds: [embed], 
+        files: [attachment], 
+        flags: 64
+      });
       console.log(`📤 Database exported by ${interaction.user.tag}`);
     } catch (error) {
       console.error('Error exporting database:', error);
-      await interaction.reply({ content: '❌ Error exporting database!', ephemeral: true });
+      await interaction.reply({ 
+        content: `❌ Error exporting database!\n\`\`\`${error.message}\`\`\``, 
+        flags: 64
+      });
+    }
+  }
+
+  if (interaction.commandName === 'add') {
+    // Check if user has admin permissions
+    if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+      await interaction.reply({ 
+        content: '❌ You need Administrator permissions to use this command!', 
+        flags: 64 
+      });
+      return;
+    }
+
+    const subcommand = interaction.options.getSubcommand();
+    const targetUser = interaction.options.getUser('user');
+    const userId = targetUser.id;
+
+    // Initialize user if doesn't exist
+    if (!db.users[userId]) {
+      db.users[userId] = {
+        username: targetUser.tag,
+        message_count: 0,
+        voice_time: 0,
+        last_message: new Date().toISOString()
+      };
+    }
+
+    if (subcommand === 'message') {
+      const amount = interaction.options.getInteger('amount');
+      const oldCount = db.users[userId].message_count;
+      db.users[userId].message_count += amount;
+      const newCount = db.users[userId].message_count;
+      
+      saveDB();
+
+      const embed = new EmbedBuilder()
+        .setTitle('✅ Messages Added')
+        .setDescription(`Added **${amount}** messages to ${targetUser.username}`)
+        .addFields(
+          { name: 'Before', value: `${oldCount}`, inline: true },
+          { name: 'After', value: `${newCount}`, inline: true }
+        )
+        .setColor(0x00FF00)
+        .setTimestamp();
+
+      await interaction.reply({ embeds: [embed] });
+      console.log(`➕ ${interaction.user.tag} added ${amount} messages to ${targetUser.tag}`);
+    }
+
+    if (subcommand === 'vc') {
+      const seconds = interaction.options.getInteger('seconds');
+      const oldTime = db.users[userId].voice_time;
+      db.users[userId].voice_time += seconds;
+      const newTime = db.users[userId].voice_time;
+      
+      saveDB();
+
+      const embed = new EmbedBuilder()
+        .setTitle('✅ VC Time Added')
+        .setDescription(`Added **${formatVoiceTime(seconds)}** to ${targetUser.username}`)
+        .addFields(
+          { name: 'Before', value: formatVoiceTime(oldTime), inline: true },
+          { name: 'After', value: formatVoiceTime(newTime), inline: true }
+        )
+        .setColor(0x00FF00)
+        .setTimestamp();
+
+      await interaction.reply({ embeds: [embed] });
+      console.log(`➕ ${interaction.user.tag} added ${seconds}s VC time to ${targetUser.tag}`);
     }
   }
 });
