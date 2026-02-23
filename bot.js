@@ -562,5 +562,16 @@ client.on('interactionCreate', async (interaction) => {
   }
 });
 
+// Dummy HTTP server for Render health checks
+const http = require('http');
+const PORT = process.env.PORT || 3000;
+
+http.createServer((req, res) => {
+  res.writeHead(200, { 'Content-Type': 'text/plain' });
+  res.end('Discord bot is running!');
+}).listen(PORT, () => {
+  console.log(`✅ HTTP server running on port ${PORT}`);
+});
+
 // Login to Discord
 client.login(process.env.DISCORD_TOKEN);
