@@ -92,6 +92,76 @@ const client = new Client({
   ],
 });
 
+// Backup configuration - SET THESE!
+const BACKUP_CHANNEL_ID = '1457527177187692574'; // Ustaw ID kanału #ogólny lub zostaw null dla DM
+const ADMIN_USER_ID = '247072676483563530'; // Twoje Discord ID
+
+// Function to send backup
+async function sendBackup(reason = 'Auto-backup') {
+  try {
+    const dbJson = JSON.stringify(db, null, 2);
+    const buffer = Buffer.from(dbJson, 'utf-8');
+    const attachment = new AttachmentBuilder(buffer, { name: 'database-backup.json' });
+    
+    const totalUsers = Object.keys(db.users).length;
+    const totalMessages = Object.values(db.users).reduce((sum, user) => sum + user.message_count, 0);
+    const totalVCTime = Object.values(db.users).reduce((sum, user) => sum + user.voice_time, 0);
+    
+    const embed = new EmbedBuilder()
+      .setTitle('🆘 Emergency Database Backup')
+      .setDescription(`**Reason:** ${reason}`)
+      .addFields(
+        { name: 'Total Users', value: `${totalUsers}`, inline: true },
+        { name: 'Total Messages', value: `${totalMessages}`, inline: true },
+        { name: 'Total VC Time', value: `${formatVoiceTime(totalVCTime)}`, inline: true }
+      )
+      .setColor(0xFF0000)
+      .setTimestamp();
+
+    // Try to send to channel first, fallback to DM
+    if (BACKUP_CHANNEL_ID) {
+      const channel = await client.channels.fetch(BACKUP_CHANNEL_ID).catch(() => null);
+      if (channel) {
+        await channel.send({ embeds: [embed], files: [attachment] });
+        console.log('💾 Backup sent to channel');
+        return;
+      }
+    }
+    
+    // Fallback to DM
+    if (ADMIN_USER_ID) {
+      const admin = await client.users.fetch(ADMIN_USER_ID).catch(() => null);
+      if (admin) {
+        await admin.send({ embeds: [embed], files: [attachment] });
+        console.log('💾 Backup sent to admin DM');
+        return;
+      }
+    }
+    
+    console.log('⚠️ Could not send backup - no channel or user configured');
+  } catch (error) {
+    console.error('❌ Failed to send backup:', error);
+  }
+}
+
+// Handle uncaught errors - send backup before crash
+process.on('uncaughtException', async (error) => {
+  console.error('💥 Uncaught Exception:', error);
+  await sendBackup('Uncaught Exception');
+  process.exit(1);
+});
+
+process.on('unhandledRejection', async (error) => {
+  console.error('💥 Unhandled Rejection:', error);
+  await sendBackup('Unhandled Rejection');
+});
+
+// Auto-backup every 6 hours
+setInterval(() => {
+  console.log('⏰ Scheduled backup...');
+  sendBackup('Scheduled backup (6h)');
+}, 7 * 24 * 6 * 60 * 60 * 1000);
+
 // Event: bot ready
 client.once('ready', async () => {
   console.log(`✅ Bot logged in as ${client.user.tag}`);
@@ -286,6 +356,9 @@ client.on('interactionCreate', async (interaction) => {
     }
 
     try {
+      // Defer reply to avoid timeout (we have 15 minutes instead of 3 seconds)
+      await interaction.deferReply({ flags: 64 });
+      
       // Export from memory
       const dbJson = JSON.stringify(db, null, 2);
       const buffer = Buffer.from(dbJson, 'utf-8');
@@ -306,18 +379,20 @@ client.on('interactionCreate', async (interaction) => {
         .setColor(0x00FF00)
         .setTimestamp();
 
-      await interaction.reply({ 
+      await interaction.editReply({ 
         embeds: [embed], 
-        files: [attachment], 
-        flags: 64
+        files: [attachment]
       });
       console.log(`📤 Database exported by ${interaction.user.tag}`);
     } catch (error) {
       console.error('Error exporting database:', error);
-      await interaction.reply({ 
-        content: `❌ Error exporting database!\n\`\`\`${error.message}\`\`\``, 
-        flags: 64
-      });
+      try {
+        await interaction.editReply({ 
+          content: `❌ Error exporting database!\n\`\`\`${error.message}\`\`\``
+        });
+      } catch (e) {
+        console.error('Failed to send error message:', e);
+      }
     }
   }
 
