@@ -156,11 +156,17 @@ process.on('unhandledRejection', async (error) => {
   await sendBackup('Unhandled Rejection');
 });
 
-// Auto-backup every 6 hours
-setInterval(() => {
-  console.log('⏰ Scheduled backup...');
-  sendBackup('Scheduled backup (6h)');
-}, 7 * 24 * 6 * 60 * 60 * 1000);
+// Schedule weekly backup (starts after bot is ready, not immediately)
+let backupInterval = null;
+client.once('ready', () => {
+  // Start weekly backup timer (7 days)
+  backupInterval = setInterval(() => {
+    console.log('⏰ Scheduled weekly backup...');
+    sendBackup('Scheduled backup (weekly)');
+  }, 7 * 24 * 60 * 60 * 1000);
+  
+  console.log('📅 Weekly backup scheduled');
+});
 
 // Event: bot ready
 client.once('ready', async () => {
@@ -192,6 +198,15 @@ client.once('ready', async () => {
       .setName('export')
       .setDescription('Export database file (Admin only)')
       .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    
+    new SlashCommandBuilder()
+      .setName('import')
+      .setDescription('Import database from JSON file (Admin only)')
+      .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+      .addAttachmentOption(option =>
+        option.setName('file')
+          .setDescription('database.json file to import')
+          .setRequired(true)),
     
     new SlashCommandBuilder()
       .setName('add')
@@ -389,6 +404,87 @@ client.on('interactionCreate', async (interaction) => {
       try {
         await interaction.editReply({ 
           content: `❌ Error exporting database!\n\`\`\`${error.message}\`\`\``
+        });
+      } catch (e) {
+        console.error('Failed to send error message:', e);
+      }
+    }
+  }
+
+  if (interaction.commandName === 'import') {
+    // Check if user has admin permissions
+    if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+      await interaction.reply({ 
+        content: '❌ You need Administrator permissions to use this command!', 
+        flags: 64 
+      });
+      return;
+    }
+
+    try {
+      await interaction.deferReply({ flags: 64 });
+      
+      const attachment = interaction.options.getAttachment('file');
+      
+      // Validate file
+      if (!attachment.name.endsWith('.json')) {
+        await interaction.editReply({ 
+          content: '❌ File must be a .json file!' 
+        });
+        return;
+      }
+
+      if (attachment.size > 5 * 1024 * 1024) { // 5MB limit
+        await interaction.editReply({ 
+          content: '❌ File is too large! Maximum 5MB.' 
+        });
+        return;
+      }
+
+      // Download and parse file
+      const response = await fetch(attachment.url);
+      const text = await response.text();
+      const importedData = JSON.parse(text);
+
+      // Validate structure
+      if (!importedData.users || typeof importedData.users !== 'object') {
+        await interaction.editReply({ 
+          content: '❌ Invalid database format! Missing "users" object.' 
+        });
+        return;
+      }
+
+      // Backup current data before import
+      const oldData = JSON.parse(JSON.stringify(db));
+      
+      // Import data
+      db.users = importedData.users;
+      db.voiceSessions = importedData.voiceSessions || {};
+      
+      saveDB();
+
+      const totalUsers = Object.keys(db.users).length;
+      const totalMessages = Object.values(db.users).reduce((sum, user) => sum + user.message_count, 0);
+      const totalVCTime = Object.values(db.users).reduce((sum, user) => sum + user.voice_time, 0);
+
+      const embed = new EmbedBuilder()
+        .setTitle('✅ Database Imported')
+        .setDescription('Database successfully imported from file')
+        .addFields(
+          { name: 'Total Users', value: `${totalUsers}`, inline: true },
+          { name: 'Total Messages', value: `${totalMessages}`, inline: true },
+          { name: 'Total VC Time', value: `${formatVoiceTime(totalVCTime)}`, inline: true }
+        )
+        .setColor(0x00FF00)
+        .setTimestamp();
+
+      await interaction.editReply({ embeds: [embed] });
+      console.log(`📥 Database imported by ${interaction.user.tag}`);
+    } catch (error) {
+      console.error('Error importing database:', error);
+      try {
+        await interaction.editReply({ 
+          content: `❌ Error importing database!\n\`\`\`${error.message}\`\`\`` 
         });
       } catch (e) {
         console.error('Failed to send error message:', e);
